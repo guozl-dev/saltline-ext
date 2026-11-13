@@ -102,7 +102,6 @@ const server = http.createServer((req, res) => {
 server.on('upgrade', (req, socket) => {
   const key = req.headers['sec-websocket-key'];
   if (!key || req.headers.upgrade?.toLowerCase() !== 'websocket') { socket.destroy(); return; }
-  console.log('[relay][dbg] upgrade key=' + JSON.stringify(key) + ' accept=' + wsAccept(key));
   socket.write('HTTP/1.1 101 Switching Protocols\r\n'
     + 'Upgrade: websocket\r\nConnection: Upgrade\r\n'
     + 'Sec-WebSocket-Accept: ' + wsAccept(key) + '\r\n\r\n');
