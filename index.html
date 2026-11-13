@@ -6204,7 +6204,7 @@ errors ${window.__errors.length}${window.__errors.length?`
  *   - t.hud.message(msg)                  原版提示条
  *   - t.events.on/emit                    原版事件总线
  * 功能与按键：
- *   Digit1 / Digit2 / Digit3 —— 三套枪械配置切换（标准 / SD 消音 / DMR 精准）
+ *   Digit1-9 / KeyX / KeyZ  —— TIDEBREAK 武器库 18 把切换（数值+配件外观，v3.0）
  *   KeyT                     —— 昼 / 夜 / 黄昏时间主题循环
  *   KeyO                     —— 准星颜色循环
  *   KeyN                     —— 准星中心点开关
@@ -6256,13 +6256,41 @@ errors ${window.__errors.length}${window.__errors.length?`
 
     const toast = (msg) => { try { G.hud.message(String(msg)); } catch { } };
 
-    /* ================= 1) 枪械配置（挂点数据化，三套配置共用一把 PAC-9 实例） ================= */
-    const LOADOUTS = [
-      { id: 'std', name: G.weapon.name, mag: G.weapon.magSize, reserve: G.weapon.reserve, spread: 1, dmgMul: 1, paint: null, kit: [] },
-      { id: 'sd',  name: 'PAC-9 SD 消音型',    mag: 45, reserve: 150, spread: 0.72, dmgMul: 0.85, paint: 0x39424a, kit: ['suppressor'] },
-      { id: 'dmr', name: 'PAC-9 DMR 精准型',   mag: 15, reserve: 60,  spread: 0.45, dmgMul: 1.6,  paint: 0x6d5a3e, kit: ['scope'] },
+    /* ================= 1) 武器库（移植自 TIDEBREAK 断潮 WEAPONS 表，18 把 × 6 类） =================
+       数值来源：tidebreak_project/build/art2.html 的 WEAPONS 数据表（伤害/射速/弹匣/备弹/换弹/散布/后坐/多弹丸）。
+       实现通道（全部运行时挂接，主脚本零逻辑改动）：
+       - 弹匣/备弹/名称：ve 活属性（换弹补弹按 ve.magSize 原生生效，已实测）
+       - 伤害：playerShot 包装器按 dmgMul = dmg/26 缩放（原版伤害闭包常量 26）
+       - 射速：input.fire 属性门控（defineProperty getter 按各武器 RPM 节流，已实测 400RPM→164ms 间隔）
+       - 全自动/半自动：auto=false 时上升沿单发
+       - 霰弹多弹丸：监听 weapon:fire 事件由 SLX 补射剩余弹丸
+       - 散布：引擎每帧重写 ve.spread（基准 .0125+bloom），update 里按 spreadHip/0.0125 比例收敛
+       - 换弹时长：ve.debug.reloadT 外部驱动（按自身时长/T 原版时长比例推进，动画同步压缩）
+       - 后坐近似：weapon:fire 时按 recoilV 叠加屏幕震动
+       - 外观：配件系统（消音/瞄镜/长枪管/枪托/弹鼓）+ 涂装取 TIDEBREAK accent 色
+       硬上限：引擎射击循环封顶 720 RPM，>720 的武器（M18/S12/V9/MG5）按 720 生效。 */
+    const TB_WEAPONS = [
+      { id: 'P9',  name: 'P9 渡鸦',   cat: '手枪', dmg: 26,  rpm: 400, mag: 20,  reserve: 120, reload: 1.85, spreadHip: 0.0135, recoilV: 0.55, auto: false, pellets: 1, paint: null,      kit: [] },
+      { id: 'R45', name: 'R45 铁砧',  cat: '手枪', dmg: 58,  rpm: 150, mag: 8,   reserve: 48,  reload: 2.55, spreadHip: 0.0175, recoilV: 1.65, auto: false, pellets: 1, paint: 0x8a7340, kit: [] },
+      { id: 'M18', name: 'M18 蜂鸟',  cat: '手枪', dmg: 18,  rpm: 900, mag: 18,  reserve: 108, reload: 1.95, spreadHip: 0.0180, recoilV: 0.48, auto: true,  pellets: 1, paint: null,      kit: ['suppressor'] },
+      { id: 'V9',  name: 'V9 潮汐',   cat: '冲锋枪', dmg: 24, rpm: 800, mag: 30,  reserve: 150, reload: 2.10, spreadHip: 0.0125, recoilV: 0.52, auto: true,  pellets: 1, paint: null,      kit: ['suppressor', 'stock'] },
+      { id: 'S12', name: 'S12 砂砾',  cat: '冲锋枪', dmg: 19, rpm: 1000, mag: 25, reserve: 125, reload: 1.80, spreadHip: 0.0170, recoilV: 0.44, auto: true,  pellets: 1, paint: null,      kit: ['longbarrel', 'stock'] },
+      { id: 'U3',  name: 'U3 短鳍',   cat: '冲锋枪', dmg: 28, rpm: 640, mag: 32,  reserve: 160, reload: 2.30, spreadHip: 0.0105, recoilV: 0.62, auto: true,  pellets: 1, paint: null,      kit: ['foregrip', 'stock'] },
+      { id: 'AR7', name: 'AR7 铁砧',  cat: '步枪', dmg: 36,  rpm: 600, mag: 30,  reserve: 150, reload: 2.50, spreadHip: 0.0100, recoilV: 1.90, auto: true,  pellets: 1, paint: null,      kit: ['longbarrel', 'foregrip', 'stock'] },
+      { id: 'CR4', name: 'CR4 潮痕',  cat: '步枪', dmg: 30,  rpm: 666, mag: 30,  reserve: 150, reload: 2.20, spreadHip: 0.0088, recoilV: 1.20, auto: true,  pellets: 1, paint: null,      kit: ['longbarrel', 'stock'] },
+      { id: 'SC9', name: 'SC9 獾式',  cat: '步枪', dmg: 45,  rpm: 400, mag: 20,  reserve: 120, reload: 2.40, spreadHip: 0.0092, recoilV: 1.55, auto: false, pellets: 1, paint: null,      kit: ['scope', 'longbarrel', 'stock'] },
+      { id: 'SR1', name: 'SR1 长钉',  cat: '狙击', dmg: 115, rpm: 41,  mag: 10,  reserve: 50,  reload: 3.40, spreadHip: 0.0420, recoilV: 3.20, auto: false, pellets: 1, paint: null,      kit: ['scope', 'longbarrel', 'stock'] },
+      { id: 'SR5', name: 'SR5 灰鹭',  cat: '狙击', dmg: 72,  rpm: 60,  mag: 10,  reserve: 60,  reload: 2.80, spreadHip: 0.0340, recoilV: 2.20, auto: false, pellets: 1, paint: null,      kit: ['scope', 'longbarrel', 'stock'] },
+      { id: 'DM7', name: 'DM7 哨兵',  cat: '狙击', dmg: 58,  rpm: 180, mag: 20,  reserve: 100, reload: 2.60, spreadHip: 0.0180, recoilV: 1.80, auto: false, pellets: 1, paint: null,      kit: ['scope', 'longbarrel', 'stock'] },
+      { id: 'SG8', name: 'SG8 碎石',  cat: '霰弹', dmg: 22,  rpm: 85,  mag: 8,   reserve: 40,  reload: 3.00, spreadHip: 0.0520, recoilV: 3.00, auto: false, pellets: 8, paint: null,      kit: ['longbarrel', 'foregrip'] },
+      { id: 'SA7', name: 'SA7 鬃刷',  cat: '霰弹', dmg: 16,  rpm: 200, mag: 7,   reserve: 35,  reload: 3.20, spreadHip: 0.0600, recoilV: 2.40, auto: false, pellets: 8, paint: null,      kit: ['longbarrel', 'foregrip'] },
+      { id: 'DB2', name: 'DB2 短管',  cat: '霰弹', dmg: 30,  rpm: 120, mag: 2,   reserve: 20,  reload: 2.40, spreadHip: 0.0700, recoilV: 4.00, auto: false, pellets: 10, paint: null,     kit: ['foregrip'] },
+      { id: 'LM1', name: 'LM1 压舱石', cat: '机枪', dmg: 30, rpm: 750, mag: 100, reserve: 200, reload: 5.20, spreadHip: 0.0150, recoilV: 1.50, auto: true,  pellets: 1, paint: null,      kit: ['drum', 'longbarrel', 'stock'] },
+      { id: 'LM8', name: 'LM8 锚链',  cat: '机枪', dmg: 40,  rpm: 650, mag: 80,  reserve: 160, reload: 5.60, spreadHip: 0.0130, recoilV: 2.10, auto: true,  pellets: 1, paint: null,      kit: ['drum', 'longbarrel', 'stock'] },
+      { id: 'MG5', name: 'MG5 龙门',  cat: '机枪', dmg: 26,  rpm: 900, mag: 120, reserve: 240, reload: 5.00, spreadHip: 0.0170, recoilV: 1.10, auto: true,  pellets: 1, paint: null,      kit: ['drum', 'longbarrel', 'stock'] },
     ];
-    const saved = LOADOUTS.map(() => ({ ammo: null, reserve: null }));
+    const saved = {};
+    for (const w of TB_WEAPONS) saved[w.id] = { ammo: null, reserve: null };
 
     /* 原始材质色（切换涂装时恢复） */
     const mat0 = new Map();
@@ -6294,58 +6322,81 @@ errors ${window.__errors.length}${window.__errors.length?`
       };
       const dark = new MatC({ color: 0x23282d, roughness: 0.55, metalness: 0.5 });
       const dark2 = new MatC({ color: 0x2a2f34, roughness: 0.5, metalness: 0.4 });
+      const wood = new MatC({ color: 0x4a3d2c, roughness: 0.75, metalness: 0.1 });
       kitMeshes.suppressor = mk(0.034, 0.034, 0.12, 0, 0, -0.585, dark);
       kitMeshes.scope = mk(0.030, 0.030, 0.090, 0, 0.095, -0.100, dark2);
-      G.weapon.root.add(kitMeshes.suppressor, kitMeshes.scope);
-      kitMeshes.suppressor.visible = false;
-      kitMeshes.scope.visible = false;
+      /* TIDEBREAK 类别配件（视觉区分用）：长枪管 / 枪托 / 弹鼓 / 前握把 */
+      kitMeshes.longbarrel = mk(0.022, 0.022, 0.22, 0, 0.006, -0.700, dark);
+      kitMeshes.stock = mk(0.030, 0.046, 0.14, 0, -0.058, 0.135, wood);
+      kitMeshes.drum = mk(0.052, 0.085, 0.052, 0, -0.093, -0.210, dark2);
+      kitMeshes.foregrip = mk(0.026, 0.052, 0.026, 0, -0.050, -0.380, dark);
+      for (const k in kitMeshes) { G.weapon.root.add(kitMeshes[k]); kitMeshes[k].visible = false; }
     } else {
       log('kit unavailable: constructors missing');
     }
 
-    function applyLoadout(idx) {
-      const ve = G.weapon, c = LOADOUTS[idx], s = saved[idx];
+    /* PAC-9 原版腰射基准散布（引擎每帧重写 ve.spread 的基准值），用于换算各武器散布比例 */
+    const PAC9_HIP = 0.0125;
+    let cur = 0;
+
+    function applyWeapon(idx) {
+      const ve = G.weapon, c = TB_WEAPONS[idx], s = saved[c.id];
+      cur = idx;
       ve.name = c.name;
       ve.magSize = c.mag;
       ve.reserve = s.reserve != null ? s.reserve : c.reserve;
       ve.ammo = s.ammo != null ? Math.max(0, Math.min(s.ammo, c.mag)) : c.mag;
       for (const [mat, orig] of mat0) {
-        if (c.paint) {
-          mat.color.copy(orig).lerp(new ColorC(c.paint), 0.55);
-        } else {
-          mat.color.copy(orig);
-        }
+        if (c.paint) mat.color.copy(orig).lerp(new ColorC(c.paint), 0.55);
+        else mat.color.copy(orig);
       }
       for (const k in kitMeshes) kitMeshes[k].visible = c.kit.includes(k);
+      store.weapon = c.id; save();
     }
 
-    let cur = Math.max(0, Math.min(LOADOUTS.length - 1, store.loadout | 0));
     let switching = 0, shown = true;
 
     function select(idx) {
-      if (switching || idx === cur || idx < 0 || idx >= LOADOUTS.length) return;
+      if (switching || idx === cur || idx < 0 || idx >= TB_WEAPONS.length) return;
       switching = 1;
-      saved[cur].ammo = G.weapon.ammo;
-      saved[cur].reserve = G.weapon.reserve;
+      saved[TB_WEAPONS[cur].id].ammo = G.weapon.ammo;
+      saved[TB_WEAPONS[cur].id].reserve = G.weapon.reserve;
       api.setVisible(false); /* 直接操作原实例：绕过包装器，避免污染 shown 标志 */
       setTimeout(() => {
-        cur = idx;
-        applyLoadout(cur);
+        applyWeapon(idx);
         api.setVisible(shown);
         switching = 0;
-        toast(LOADOUTS[cur].name);
-        store.loadout = cur; save();
+        toast(TB_WEAPONS[cur].name + ' · ' + TB_WEAPONS[cur].cat);
       }, 340);
+    }
+    function selectById(id) {
+      const i = TB_WEAPONS.findIndex(w => w.id === id);
+      if (i >= 0) select(i);
+    }
+    function cycleWeapon(dir) {
+      select((cur + dir + TB_WEAPONS.length) % TB_WEAPONS.length);
     }
 
     /* 武器控制器：主循环/HUD/战斗读取 t.weapon —— 透传到原版武器实例，
-       并在每帧按配置收敛散布（原版 ve.spread 由武器内部每帧重写） */
+       每帧按当前武器散布比例收敛（原版 ve.spread 由武器内部每帧重写），
+       并驱动换弹进度（ve.debug.reloadT）实现按武器的换弹时长 */
     const api = G.weapon;
     const ctrl = {
       update(dt) {
         api.update(dt);
-        const c = LOADOUTS[cur];
-        if (c.spread !== 1 && isFinite(api.spread)) api.spread *= c.spread;
+        const c = TB_WEAPONS[cur];
+        /* 散布收敛：引擎基准 .0125，乘以当前武器 spreadHip 比例 */
+        if (isFinite(api.spread)) api.spread *= c.spreadHip / PAC9_HIP;
+        /* 换弹时长驱动：按 自身时长/T原版时长 比例推进动画（t=比例×T，到时释放由引擎完成） */
+        try {
+          const dbg = api.debug;
+          if (dbg && dbg.reloadT != null && reloadDrive.on) {
+            const T = reloadDrive.empty ? 2.72 : 2.1; /* 原版 G_/W_ 常量 */
+            const p = (performance.now() - reloadDrive.t0) / (c.reload * 1000);
+            if (p >= 1) { dbg.reloadT = null; reloadDrive.on = false; }
+            else dbg.reloadT = Math.min(T, p * T);
+          }
+        } catch { }
       },
       setVisible(v) { shown = !!v; if (!switching) api.setVisible(shown); },
       setWetness(w) { if (api.setWetness) api.setWetness(w); },
@@ -6353,9 +6404,9 @@ errors ${window.__errors.length}${window.__errors.length?`
       snap() { return api.snap ? api.snap() : undefined; },
       reload() { return api.reload ? api.reload() : undefined; },
       reset() {
-        for (const s of saved) { s.ammo = null; s.reserve = null; }
+        for (const k in saved) { saved[k].ammo = null; saved[k].reserve = null; }
         if (api.reset) api.reset();
-        applyLoadout(cur);
+        applyWeapon(cur);
       },
     };
     for (const k of ['ammo', 'magSize', 'reserve', 'name', 'spread', 'state', 'ads', 'root', 'info', 'debug', 'damage', 'rpm']) {
@@ -6366,7 +6417,78 @@ errors ${window.__errors.length}${window.__errors.length?`
       });
     }
     G.weapon = ctrl;
-    applyLoadout(cur);
+    /* 初始武器：按 localStorage 记忆恢复，非法值回退 P9 */
+    {
+      const want = TB_WEAPONS.findIndex(w => w.id === store.weapon);
+      applyWeapon(want >= 0 ? want : 0);
+    }
+
+    /* ================= 1a) 射速门控（input.fire 属性拦截） =================
+       原版射击循环每帧动态读 i.input.fire（已实测），用 defineProperty 拦截：
+       setter 保存输入模块写入的原始开火状态，getter 按当前武器射速节流放行。
+       全自动：按 60000/rpm 间隔放行；半自动：上升沿单发。
+       引擎自身封顶 720 RPM，>720 的武器按 720 生效。 */
+    const fireGate = { raw: false, semiOpen: false, lastAllow: 0 };
+    try {
+      const input = G.input;
+      if (input && 'fire' in input) {
+        Object.defineProperty(input, 'fire', {
+          configurable: true,
+          get() {
+            const c = TB_WEAPONS[cur];
+            if (!fireGate.raw || !c) return false;
+            if (!c.auto) {
+              if (fireGate.semiOpen) { fireGate.semiOpen = false; return true; }
+              return false;
+            }
+            const iv = 60000 / Math.min(c.rpm, 720);
+            const now = performance.now();
+            if (now - fireGate.lastAllow >= iv) { fireGate.lastAllow = now; return true; }
+            return false;
+          },
+          set(v) {
+            const nv = !!v;
+            if (nv && !fireGate.raw) fireGate.semiOpen = true; /* 上升沿：半自动放行一次 */
+            fireGate.raw = nv;
+          },
+        });
+      } else log('fire gate unavailable: input missing');
+    } catch (e) { log('fire gate error: ' + e.message); }
+
+    /* ================= 1b-2) 霰弹多弹丸 + 后坐近似 + 换弹时长登记 ================= */
+    let pelletBypass = false; /* 霰弹补射标志：模块级闭包，不挂函数属性（防第三方包装遮蔽） */
+    if (G.events && G.events.on) {
+      G.events.on('weapon:fire', e => {
+        const c = TB_WEAPONS[cur];
+        if (!c) return;
+        /* 霰弹：首颗弹丸由引擎打出（伤害经包装器缩放），SLX 补射剩余弹丸（原始伤害直通） */
+        if (c.pellets > 1 && G.combat && G.combat.playerShot && G.THREE && e && e.origin && e.dir) {
+          const shot = G.combat.playerShot;
+          const THREEr = G.THREE;
+          pelletBypass = true;
+          try {
+            const dir = e.dir.clone(), up = new THREEr.Vector3(0, 1, 0);
+            const right = dir.clone().cross(up).normalize();
+            const upv = right.clone().cross(dir).normalize();
+            for (let i = 1; i < c.pellets; i++) {
+              const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * c.spreadHip * 3;
+              const d2 = dir.clone().addScaledVector(right, Math.cos(a) * r).addScaledVector(upv, Math.sin(a) * r).normalize();
+              shot(e.origin, d2, { damage: c.dmg, range: 48 });
+            }
+          } catch { } finally { pelletBypass = false; }
+        }
+        /* 后坐近似：原版枪感是 PAC-9 手枪级（recoilV≈.55），按各武器 recoilV 叠加屏幕震动 */
+        try {
+          if (G.player && G.player.addShake && c.recoilV > 0.6) G.player.addShake(Math.min(0.5, (c.recoilV - 0.55) * 0.16));
+        } catch { }
+      });
+      /* 换弹时长：start 事件登记空匣/战术与起始时间，update 里驱动 reloadT */
+      G.events.on('weapon:reload', e => {
+        if (e && e.phase === 'start') reloadDrive.on = true, reloadDrive.t0 = performance.now(), reloadDrive.empty = !!e.empty;
+        else if (e && e.phase === 'done') reloadDrive.on = false;
+      });
+    }
+    const reloadDrive = { on: false, t0: 0, empty: false };
 
     /* ================= 1b) 武器伤害系数（包装原版 combat.playerShot） =================
        武器每发读取 i.combat.playerShot（i 为活引用），运行时替换即可按配置缩放伤害，
@@ -6395,7 +6517,8 @@ errors ${window.__errors.length}${window.__errors.length?`
     if (G.combat && G.combat.playerShot) {
       const origShot = G.combat.playerShot.bind(G.combat);
       const wrappedShot = (eye, dir, opt) => {
-        const mul = LOADOUTS[cur].dmgMul || 1;
+        const c = TB_WEAPONS[cur];
+        const mul = pelletBypass ? 1 : (c ? c.dmg / 26 : 1); /* 原版伤害闭包常量 26；霰弹补射直通 */
         let o = opt;
         if (mul !== 1 && o && o.damage != null) o = Object.assign({}, o, { damage: o.damage * mul });
         const r = origShot(eye, dir, o);
@@ -6902,11 +7025,14 @@ errors ${window.__errors.length}${window.__errors.length?`
 
     /* 对外调试/验证接口（与原版 __G/__stats 调试出口同一思路） */
     window.SLX = {
-      version: '2.0',
+      version: '3.0',
       records: store.records,
       get nades() { return nades; },
       get seed() { return store.seed; },
+      get weapon() { return { id: TB_WEAPONS[cur].id, name: TB_WEAPONS[cur].name, cat: TB_WEAPONS[cur].cat }; },
+      get weapons() { return TB_WEAPONS.map(w => w.id + ' ' + w.name); },
       net: { get room() { return NET.room; }, get id() { return NET.id; }, get status() { return NET.status }, get remotes() { return [...NET.remotes.keys()]; } },
+      select, cycleWeapon,
       showDamage, feedAdd, toggleDebug, updateRecordsLine, netConnect, netLeave,
     };
 
@@ -6918,9 +7044,15 @@ errors ${window.__errors.length}${window.__errors.length?`
       const G2 = window.__G;
       if (!G2 || !G2.game || G2.game.state !== 'playing') return;
       switch (e.code) {
-        case 'Digit1': select(0); break;
-        case 'Digit2': select(1); break;
-        case 'Digit3': select(2); break;
+        /* 数字键 1-9 快选前九把武器，X/Z 循环全部 18 把（TIDEBREAK 武器库） */
+        case 'Digit1': case 'Digit2': case 'Digit3': case 'Digit4': case 'Digit5':
+        case 'Digit6': case 'Digit7': case 'Digit8': case 'Digit9': {
+          const n = Number(e.code.slice(5)) - 1;
+          if (n < TB_WEAPONS.length) select(n);
+          break;
+        }
+        case 'KeyX': cycleWeapon(1); break;
+        case 'KeyZ': cycleWeapon(-1); break;
         case 'KeyG': throwGrenade(); break;
         case 'KeyM': cycleLayout(); break;
         case 'KeyT': applyTheme((themeIdx + 1) % THEMES.length); break;
@@ -6934,7 +7066,7 @@ errors ${window.__errors.length}${window.__errors.length?`
     /* 应用持久化状态 */
     if (themeIdx !== 0) applyTheme(themeIdx, true);
     applyXhair();
-    log('loadout=' + LOADOUTS[cur].name, 'theme=' + (themeIdx === 0 ? 'dusk' : THEMES[themeIdx].label));
+    log('weapon=' + TB_WEAPONS[cur].name + ' (共' + TB_WEAPONS.length + '把)', 'theme=' + (themeIdx === 0 ? 'dusk' : THEMES[themeIdx].label));
   }
 
   boot();
