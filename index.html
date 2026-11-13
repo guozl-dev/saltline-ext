@@ -6238,7 +6238,8 @@ errors ${window.__errors.length}${window.__errors.length?`
     const viewLayer = 1; /* 原渲染模块的视图模型层（layer zc = 1） */
 
     /* 从原项目实例反查构造器：不引用打包内名，升级打包仍可用 */
-    let MeshC = null, MatC = null, ColorC = null, BoxGeoC = null;
+    let MeshC = null, MatC = null, ColorC = null, BoxGeoC = null, GroupC = null;
+    GroupC = G.weapon.root.constructor;
     G.weapon.root.traverse(o => { if (!MeshC && o.isMesh) MeshC = o.constructor; });
     G.weapon.root.traverse(o => {
       if (!MatC && o.isMesh && o.material && o.material.isMeshStandardMaterial) MatC = o.material.constructor;
@@ -6471,25 +6472,38 @@ errors ${window.__errors.length}${window.__errors.length?`
 
     /* ================= 3b) 地图布局加载（移植自 TIDEBREAK 地图维度） =================
        原版 boot 以 URL ?seed= 播种关卡随机数（rng:il(+(i.seed||4207))），
-       切换布局 = 换 seed 并重载；不同 seed 生成不同的集装箱堆叠布局。 */
+       切换布局 = 换 seed 并重载；不同 seed 生成不同的集装箱堆叠布局。
+       v2：store.seed 为唯一数据源（联机房间会同步 seed）。 */
     const LAYOUTS = [
       { seed: 4207,  label: '港区 · 标准布局' },
       { seed: 31337, label: '港区 · 变体 α' },
       { seed: 90210, label: '港区 · 变体 β' },
     ];
-    let layoutIdx = Math.max(0, Math.min(LAYOUTS.length - 1, store.layout | 0));
-    function applyLayout(idx, silent) {
-      layoutIdx = idx;
-      store.layout = idx; save();
+    store.seed = Number(store.seed ?? 4207);
+    function currentSeed() {
+      const u = Number(new URLSearchParams(location.search).get('seed'));
+      return isFinite(u) ? u : 4207;
+    }
+    function layoutLabel(seed) {
+      const l = LAYOUTS.find(x => x.seed === seed);
+      return l ? l.label : '自定义布局 #' + seed;
+    }
+    function applySeed(seed, silent) {
+      store.seed = Number(seed) || 4207; save();
       const u = new URLSearchParams(location.search);
-      u.set('seed', String(LAYOUTS[idx].seed));
-      if (!silent) toast('布局已切换：' + LAYOUTS[idx].label + '（重开后生效）');
+      u.set('seed', String(store.seed));
+      if (!silent) toast('布局已切换：' + layoutLabel(store.seed) + '（重开后生效）');
       setTimeout(() => { location.search = u.toString(); }, silent ? 0 : 700);
+    }
+    function cycleLayout() {
+      const idx = LAYOUTS.findIndex(x => x.seed === store.seed);
+      const next = LAYOUTS[(idx + 1 + LAYOUTS.length) % LAYOUTS.length];
+      applySeed(next.seed);
     }
     /* 启动时若记忆布局与当前 URL 不符且 URL 未显式带 seed，则静默应用一次（无循环：
        应用后 URL 携带 seed，后续刷新直接命中） */
-    if (layoutIdx > 0 && !new URLSearchParams(location.search).has('seed')) {
-      applyLayout(layoutIdx, true);
+    if (currentSeed() !== store.seed && !new URLSearchParams(location.search).has('seed')) {
+      applySeed(store.seed, true);
     }
 
     /* ================= 3c) 手雷投掷（移植自 TIDEBREAK 攻击机制） =================
@@ -6651,13 +6665,249 @@ errors ${window.__errors.length}${window.__errors.length?`
       dbg.style.display = dbgOn ? 'block' : 'none';
     }
 
+    /* ================= 7) 联机 v2.0（影式协作，TIDEBREAK NET 架构移植） =================
+       共享空间层：房间创建/加入（4 位房间码）、玩家状态 15Hz 同步、远程角色渲染
+       （程序化人形 + 姓名牌）、断线自动重连回归（同房间同名复用槽位）、房间 seed
+       一致性校验（加入者自动跟随房主布局）。敌人与中继目标由各客户端本地模拟；
+       不连接服务器时 v1 单机体验完全不变。 */
+    const NET_URL = String(store.netUrl || (location.protocol.indexOf('http') === 0 ? 'ws://' + location.host : 'ws://127.0.0.1:8787'));
+    const NET = {
+      ws: null, room: null, id: null, status: '离线 · 单机',
+      remotes: new Map(), retries: 0, timer: null,
+    };
+    store.netName = store.netName || ('玩家' + (10 + (Math.random() * 89 | 0)));
+    const AV_COLORS = [0x9fb3c8, 0xd2622a, 0x5a8fbf, 0x9e6dbf, 0x59a05e, 0xbf5a70];
+    let nameLayer = null;
+
+    function baseHttp() { return NET_URL.replace(/^ws(s)?:\/\//, (m, s1) => s1 ? 'https://' : 'http://'); }
+    function netSend(obj) {
+      if (NET.transport === 'sse') {
+        if (!NET.room) return;
+        try { fetch(baseHttp() + '/net-post', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room: NET.room, name: NET.name, payload: obj }) }).catch(() => { }); } catch { }
+        return;
+      }
+      if (NET.ws && NET.ws.readyState === 1) NET.ws.send(JSON.stringify(obj));
+    }
+    function updateNetChip() {
+      let chip = document.getElementById('slx-net-chip');
+      if (!chip) {
+        chip = document.createElement('div');
+        chip.id = 'slx-net-chip';
+        chip.style.cssText = 'position:absolute;right:14px;top:calc(16px + var(--sat,0px) + 56px);z-index:7;'
+          + 'font:500 11px/1 var(--f-mono);letter-spacing:.04em;color:var(--bone);background:var(--plate-solid);'
+          + 'border:1px solid var(--line);padding:5px 8px;pointer-events:auto;cursor:pointer';
+        chip.addEventListener('click', () => { const pn = document.getElementById('slx-net-panel'); if (pn) pn.style.display = pn.style.display === 'none' ? 'block' : 'none'; });
+        document.getElementById('ui').appendChild(chip);
+      }
+      chip.textContent = NET.room ? ('联机 ' + NET.room + ' · ' + (NET.remotes.size + 1) + ' 人 · ' + NET.status)
+        : ('联机 · ' + NET.status);
+    }
+    function makeAvatar(colorIdx) {
+      const g = new GroupC();
+      const body = new MatC({ color: AV_COLORS[colorIdx % AV_COLORS.length], roughness: 0.7, metalness: 0.1 });
+      const dark = new MatC({ color: 0x1d2226, roughness: 0.8, metalness: 0.1 });
+      const add = (w, h, d, x, y, z, mat) => {
+        const m = new MeshC(new BoxGeoC(w, h, d), mat);
+        m.position.set(x, y, z); m.castShadow = false; m.receiveShadow = false;
+        g.add(m);
+        return m;
+      };
+      add(0.44, 0.58, 0.26, 0, 1.15, 0, body);          // 躯干
+      add(0.24, 0.24, 0.24, 0, 1.62, 0, body);          // 头
+      add(0.15, 0.55, 0.18, -0.13, 0.30, 0, dark);      // 左腿
+      add(0.15, 0.55, 0.18, 0.13, 0.30, 0, dark);       // 右腿
+      add(0.05, 0.05, 0.52, 0.16, 1.28, -0.18, dark);   // 枪
+      return g;
+    }
+    function ensureRemote(id, name) {
+      let r = NET.remotes.get(id);
+      if (r) { if (name) r.name = name; return r; }
+      const colorIdx = (Number(id) - 1) || 0;
+      const mesh = makeAvatar(colorIdx);
+      G.render.scene.add(mesh);
+      if (!nameLayer) {
+        nameLayer = document.createElement('div');
+        nameLayer.id = 'slx-names';
+        nameLayer.style.cssText = 'position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:6';
+        document.getElementById('ui').appendChild(nameLayer);
+      }
+      const plate = document.createElement('div');
+      plate.style.cssText = 'position:absolute;transform:translate(-50%,-100%);white-space:nowrap;'
+        + 'font:500 11px/1.5 var(--f-mono);color:var(--bone);background:var(--plate-solid);'
+        + 'border:1px solid var(--line);padding:2px 6px;text-align:center';
+      nameLayer.appendChild(plate);
+      r = {
+        name: name || ('玩家' + id), mesh, plate,
+        target: new (G.player.pos.constructor)(0, 0, 0), yaw: 0, hp: 100, al: 1, wn: '', am: 0,
+        seen: performance.now(),
+      };
+      mesh.visible = false; plate.style.display = 'none';
+      NET.remotes.set(id, r);
+      return r;
+    }
+    function removeRemote(id) {
+      const r = NET.remotes.get(id);
+      if (!r) return;
+      try { if (r.mesh) G.render.scene.remove(r.mesh); } catch { }
+      r.plate.remove();
+      NET.remotes.delete(id);
+      updateNetChip();
+    }
+    function clearRemotes() { for (const id of [...NET.remotes.keys()]) removeRemote(id); }
+    function onNetMsg(m) {
+      if (!m || typeof m.t !== 'string') return;
+      if (m.t !== 'p') console.log('[slx][net]', m.t, 'id=' + m.id, 'name=' + (m.name || ''));
+      switch (m.t) {
+        case 'joined': {
+          NET.room = m.code; NET.id = m.id; NET.retries = 0;
+          store.netRoom = m.code; save();
+          NET.status = m.rejoin ? '重连回归' : '已连接';
+          feedAdd(m.rejoin ? '重连回归：' + m.code : '已进入房间 ' + m.code);
+          const cur = currentSeed();
+          if (Number(m.seed) !== cur) { store.seed = Number(m.seed); save(); applySeed(Number(m.seed), true); }
+          for (const pl of (m.players || [])) {
+            if (pl.id === m.id) continue;
+            const r = ensureRemote(pl.id, pl.name);
+            if (pl.last) { r.target.set(pl.last.p[0], pl.last.p[1], pl.last.p[2]); r.yaw = pl.last.yaw || 0; r.hp = pl.last.hp | 0; r.al = pl.last.al; }
+          }
+          break;
+        }
+        case 'peerjoin': NET.names = NET.names || {}; NET.names[m.id] = m.name; feedAdd((m.name || '玩家') + ' 加入了房间'); break;
+        case 'rejoin': feedAdd((m.name || '玩家') + ' 重连回归'); break;
+        case 'p': {
+          const r = ensureRemote(m.id, m.name);
+          r.seen = performance.now();
+          r.target.set(m.p[0], m.p[1], m.p[2]);
+          r.yaw = m.yaw || 0; r.hp = m.hp | 0; r.al = m.al; r.wn = m.wn || ''; r.am = m.am | 0;
+          r.mesh.visible = !!r.al;
+          break;
+        }
+        case 'dc': { const r = NET.remotes.get(m.id); if (r) r.plate.textContent = r.name + '（断线）'; break; }
+        case 'leave': removeRemote(m.id); feedAdd((m.name || '玩家') + ' 离开了'); break;
+        case 'x': feedAdd((NET.names && NET.names[m.id] ? NET.names[m.id] + '：' : '') + (m.msg || '')); break;
+        case 'err': toast(m.msg || '联机出错'); NET.status = '出错'; break;
+      }
+      updateNetChip();
+    }
+    function netConnect(mode, roomCode) {
+      NET.name = store.netName;
+      NET.pendingMode = mode;
+      NET.pendingRoom = roomCode || store.netRoom || '';
+      NET.transport = 'ws';
+      try { NET.ws = new WebSocket(NET_URL); } catch { return sseFallback(); }
+      NET.status = '连接中'; updateNetChip();
+      NET.ws.onopen = () => {
+        NET.transport = 'ws';
+        netSend({ t: mode === 'create' ? 'create' : 'join', name: NET.name, room: NET.pendingRoom, seed: currentSeed() });
+      };
+      NET.ws.onmessage = ev => { try { onNetMsg(JSON.parse(ev.data)); } catch { } };
+      NET.ws.onclose = () => {
+        NET.ws = null;
+        sseFallback(); /* 首连被拦（LNA/代理）或已入房断开 → SSE 通道接管（其自动重连会按名回归） */
+      };
+    }
+    function sseFallback() {
+      NET.transport = 'sse';
+      NET.status = '连接中（HTTP 通道）'; updateNetChip();
+      const q = new URLSearchParams();
+      q.set('name', NET.name);
+      q.set('seed', String(currentSeed()));
+      if (NET.pendingRoom) q.set('room', NET.pendingRoom);
+      try { NET.es = new EventSource(baseHttp() + '/net-stream?' + q.toString()); }
+      catch { NET.status = '离线 · 单机'; updateNetChip(); return; }
+      NET.es.onmessage = ev => { try { onNetMsg(JSON.parse(ev.data)); } catch { } };
+      NET.es.onerror = () => {
+        if (!NET.es || NET.es.readyState === 2) { NET.status = '离线（中继不可达）'; clearRemotes(); updateNetChip(); }
+        else { NET.status = '重连中'; updateNetChip(); }
+      };
+    }
+    function scheduleRejoin() {
+      if (NET.retries >= 5) { NET.status = '离线（重连失败）'; updateNetChip(); return; }
+      const delay = 1000 * Math.pow(2, NET.retries++);
+      setTimeout(() => { if (!NET.ws && NET.room) netConnect('join'); }, delay);
+    }
+    function netLeave() {
+      if (NET.room) netSend({ t: 'leave' });
+      NET.room = null; NET.id = null; NET.status = '离线 · 单机';
+      store.netRoom = ''; save();
+      clearRemotes();
+      if (NET.ws) NET.ws.close();
+      updateNetChip();
+    }
+    /* 状态广播 15Hz（仅联机时） */
+    setInterval(() => {
+      if (!NET.room || !G.player) return;
+      const p = G.player.pos;
+      netSend({
+        t: 's',
+        p: [+p.x.toFixed(2), +p.y.toFixed(2), +p.z.toFixed(2)],
+        yaw: +G.player.yaw.toFixed(2),
+        hp: G.player.health | 0,
+        al: G.player.alive ? 1 : 0,
+        wn: (G.weapon && G.weapon.name) || '',
+        am: (G.weapon && G.weapon.ammo) | 0,
+      });
+    }, 66);
+    /* 远程角色插值渲染 + 姓名牌（常驻低频循环） */
+    (function netFrame() {
+      for (const r of NET.remotes.values()) {
+        if (!r.mesh) continue;
+        r.mesh.position.lerp(r.target, 0.35);
+        r.mesh.rotation.y = r.yaw || 0;
+        const v = r.mesh.position.clone(); v.y += 2.05; v.project(G.camera);
+        if (v.z > 1) { r.plate.style.display = 'none'; continue; }
+        r.plate.style.display = 'block';
+        r.plate.style.left = (((v.x * 0.5 + 0.5) * innerWidth) | 0) + 'px';
+        r.plate.style.top = (((-v.y * 0.5 + 0.5) * innerHeight) | 0) + 'px';
+        r.plate.textContent = r.name + '  HP ' + r.hp + (r.al ? '' : '（阵亡）');
+        r.plate.style.opacity = r.al ? '1' : '0.5';
+        if (performance.now() - r.seen > 3000) r.mesh.visible = false;
+      }
+      requestAnimationFrame(netFrame);
+    })();
+    /* 联机小面板（KeyU 开关，点状态条也可开） */
+    function ensureNetPanel() {
+      let pn = document.getElementById('slx-net-panel');
+      if (pn) return pn;
+      pn = document.createElement('div');
+      pn.id = 'slx-net-panel';
+      pn.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:50;display:none;'
+        + 'background:var(--plate-solid);border:1px solid var(--line);padding:16px 18px;min-width:320px;'
+        + 'font:500 13px/1.8 var(--f-mono);color:var(--bone)';
+      pn.innerHTML = `
+        <div style="font:600 14px/1 var(--f-label);letter-spacing:.2em;margin-bottom:10px">联机 · 影式协作</div>
+        <label style="display:block">昵称 <input id="slx-net-name" maxlength="10" style="width:150px;background:var(--ink-2);border:1px solid var(--line);color:var(--bone);font:inherit;padding:4px 6px"></label>
+        <label style="display:block">中继服务器 <input id="slx-net-url" style="width:220px;background:var(--ink-2);border:1px solid var(--line);color:var(--bone);font:inherit;padding:4px 6px"></label>
+        <div style="margin:10px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button data-slx="create" style="cursor:pointer;background:var(--ink-2);border:1px solid var(--line);color:var(--bone);font:inherit;padding:4px 10px">创建房间</button>
+          <input id="slx-net-code" maxlength="4" placeholder="房间码" style="width:70px;background:var(--ink-2);border:1px solid var(--line);color:var(--bone);font:inherit;padding:4px 6px;text-transform:uppercase">
+          <button data-slx="join" style="cursor:pointer;background:var(--ink-2);border:1px solid var(--line);color:var(--bone);font:inherit;padding:4px 10px">加入</button>
+          <button data-slx="leave" style="cursor:pointer;background:var(--ink-2);border:1px solid var(--line);color:var(--bone);font:inherit;padding:4px 10px">离开</button>
+        </div>
+        <p style="font:400 11px/1.6 var(--f-mono);color:var(--steel);margin:0">影式协作：共享空间与数据同步；敌人与中继由各自客户端本地模拟。需先启动中继服务器：<br>node server/index.js（默认 ws://localhost:8787）</p>`;
+      document.getElementById('ui').appendChild(pn);
+      pn.querySelector('#slx-net-name').value = store.netName;
+      pn.querySelector('#slx-net-url').value = NET_URL;
+      pn.querySelector('#slx-net-name').addEventListener('change', e => { store.netName = e.target.value.trim() || store.netName; save(); });
+      pn.querySelector('#slx-net-url').addEventListener('change', e => { store.netUrl = e.target.value.trim(); save(); });
+      pn.querySelector('[data-slx="create"]').addEventListener('click', () => netConnect('create'));
+      pn.querySelector('[data-slx="join"]').addEventListener('click', () => {
+        const code = (pn.querySelector('#slx-net-code').value || '').trim().toUpperCase();
+        if (!code) { toast('请输入房间码'); return; }
+        netConnect('join', code);
+      });
+      pn.querySelector('[data-slx="leave"]').addEventListener('click', netLeave);
+      return pn;
+    }
+
     /* 对外调试/验证接口（与原版 __G/__stats 调试出口同一思路） */
     window.SLX = {
-      version: '1.2',
+      version: '2.0',
       records: store.records,
       get nades() { return nades; },
-      get layout() { return layoutIdx; },
-      showDamage, feedAdd, toggleDebug, updateRecordsLine,
+      get seed() { return store.seed; },
+      net: { get room() { return NET.room; }, get id() { return NET.id; }, get status() { return NET.status }, get remotes() { return [...NET.remotes.keys()]; } },
+      showDamage, feedAdd, toggleDebug, updateRecordsLine, netConnect, netLeave,
     };
 
     /* ================= 按键（仅游玩状态生效，与原版 keydown 守卫一致） ================= */
@@ -6672,11 +6922,12 @@ errors ${window.__errors.length}${window.__errors.length?`
         case 'Digit2': select(1); break;
         case 'Digit3': select(2); break;
         case 'KeyG': throwGrenade(); break;
-        case 'KeyM': applyLayout((layoutIdx + 1) % LAYOUTS.length); break;
+        case 'KeyM': cycleLayout(); break;
         case 'KeyT': applyTheme((themeIdx + 1) % THEMES.length); break;
         case 'KeyO': store.xcolor = ((store.xcolor | 0) + 1) % XCOLORS.length; applyXhair(); save(); break;
         case 'KeyN': store.xdot = !store.xdot; applyXhair(); save(); break;
         case 'F3': e.preventDefault(); toggleDebug(); break;
+        case 'KeyU': { const pn = ensureNetPanel(); pn.style.display = pn.style.display === 'none' ? 'block' : 'none'; break; }
       }
     });
 
